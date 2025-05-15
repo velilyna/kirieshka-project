@@ -1,9 +1,12 @@
+import matplotlib
+matplotlib.use('Agg')
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import interpolate
 import io
+
 
 st.set_page_config(layout="wide", page_title="Financial Analysis Suite")
 
