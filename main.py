@@ -118,13 +118,18 @@ def main():
             elif unknown_param == "term":
                 st.success(f"Loan Term: {result:.0f} months ({result/12:.1f} years)")
                 
-            if unknown_param != "payment":
+            # Calculate monthly payment for summary stats
+            if unknown_param == "payment":
+                monthly_payment = result
+            else:
                 monthly_payment = calculate_loan_parameter([principal, interest_rate, term, 0], "payment")
                 st.info(f"Monthly Payment: ${monthly_payment:.2f}")
-                
-            total_payment = monthly_payment * term
-            total_interest = total_payment - principal
-            st.info(f"Total Payment: ${total_payment:.2f} | Total Interest: ${total_interest:.2f}")
+            
+            # Only show total payment info if we have valid values
+            if monthly_payment > 0 and term > 0:
+                total_payment = monthly_payment * term
+                total_interest = total_payment - principal
+                st.info(f"Total Payment: ${total_payment:.2f} | Total Interest: ${total_interest:.2f}")
     
     with tab2:
         st.header("Least Squares Method")
