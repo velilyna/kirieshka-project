@@ -48,40 +48,87 @@ def calculate_loan_parameter(known_parameters, unknown_parameter):
         term = np.log(payment / (payment - principal * monthly_rate)) / np.log(1 + monthly_rate)
         return round(term)
 
-def least_squares_approximation(x, y, degree):
+def stock_price_forecast(x, y, degree, forecast_periods=12):
+    """
+    Uses least squares method to forecast future stock prices
+    """
     coeffs = np.polyfit(x, y, degree)
-    return coeffs
-
-def predict_values(x, coeffs, prediction_points=10):
     polynomial = np.poly1d(coeffs)
-    x_range = max(x) - min(x)
-    x_pred = np.linspace(min(x), max(x) + 0.3 * x_range, prediction_points)
-    y_pred = polynomial(x_pred)
-    return x_pred, y_pred
+    
+    # Forecast future periods
+    last_x = max(x)
+    forecast_x = np.array([last_x + i + 1 for i in range(forecast_periods)])
+    forecast_y = polynomial(forecast_x)
+    
+    # Full range for plotting
+    x_full = np.append(x, forecast_x)
+    y_full = np.append(y, forecast_y)
+    
+    return coeffs, polynomial, x_full, y_full, forecast_x, forecast_y
 
-def lagrange_basis_polynomial(x, x_points, j):
-    basis = 1.0
-    for i in range(len(x_points)):
-        if i != j:
-            basis *= (x - x_points[i]) / (x_points[j] - x_points[i])
-    return basis
+def portfolio_optimization(returns, risk_free_rate=0.02):
+    """
+    Calculate optimal portfolio weights using Lagrange multipliers
+    """
+    n = len(returns.columns)
+    
+    # Calculate mean returns and covariance matrix
+    mean_returns = returns.mean()
+    cov_matrix = returns.cov()
+    
+    # Calculate the inverse of the covariance matrix
+    inv_cov = np.linalg.inv(cov_matrix.values)
+    
+    # Calculate the vector of 1's
+    ones = np.ones(n)
+    
+    # Calculate A, B, C, D from modern portfolio theory
+    A = np.dot(np.dot(mean_returns.values, inv_cov), ones)
+    B = np.dot(np.dot(ones, inv_cov), ones)
+    C = np.dot(np.dot(mean_returns.values, inv_cov), mean_returns.values)
+    D = B * C - A * A
+    
+    # Calculate the weights for the minimum variance portfolio
+    min_var_weights = np.dot(inv_cov, ones) / B
+    
+    # Calculate the weights for the tangency portfolio
+    tangency_weights = np.dot(inv_cov, mean_returns.values - risk_free_rate * ones) / np.dot(inv_cov, mean_returns.values - risk_free_rate * ones).sum()
+    
+    # Calculate the expected return and risk for different portfolios
+    expected_returns = np.linspace(mean_returns.min(), mean_returns.max(), 100)
+    risks = []
+    
+    for er in expected_returns:
+        lam = (C - er * A) / D
+        mu = (er * B - A) / D
+        weights = np.dot(inv_cov, (lam * ones + mu * mean_returns.values))
+        
+        portfolio_risk = np.sqrt(np.dot(np.dot(weights, cov_matrix.values), weights))
+        risks.append(portfolio_risk)
+    
+    return min_var_weights, tangency_weights, expected_returns, risks
 
-def lagrange_interpolate(x_points, y_points, x):
-    result = 0.0
-    for j in range(len(x_points)):
-        result += y_points[j] * lagrange_basis_polynomial(x, x_points, j)
-    return result
-
-def apply_cubic_spline(x, y, points=500):
-    tck = interpolate.splrep(x, y, s=0)
-    x_new = np.linspace(min(x), max(x), points)
-    y_new = interpolate.splev(x_new, tck, der=0)
-    return x_new, y_new
+def yield_curve_interpolation(maturities, yields, new_maturities):
+    """
+    Uses cubic spline interpolation to create a smooth yield curve
+    """
+    # Sort by maturity
+    idx = np.argsort(maturities)
+    maturities = maturities[idx]
+    yields = yields[idx]
+    
+    # Create cubic spline interpolation
+    tck = interpolate.splrep(maturities, yields, s=0)
+    
+    # Interpolate at new maturities
+    new_yields = interpolate.splev(new_maturities, tck, der=0)
+    
+    return new_maturities, new_yields, tck
 
 def main():
     st.title("Financial Data Analysis Suite")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["Loan Calculator", "Least Squares", "Lagrange Interpolation", "Cubic Spline"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Loan Calculator", "Stock Price Forecast", "Portfolio Optimization", "Yield Curve Analysis"])
     
     with tab1:
         st.header("Loan Calculator (Newton's Method)")
@@ -132,212 +179,348 @@ def main():
                 st.info(f"Total Payment: ${total_payment:.2f} | Total Interest: ${total_interest:.2f}")
     
     with tab2:
-        st.header("Least Squares Method")
+        st.header("Stock Price Forecast (Least Squares Method)")
         
         method = st.radio("Input Method", ["Upload CSV", "Use Sample Data"], horizontal=True)
         
         if method == "Upload CSV":
-            uploaded_file = st.file_uploader("Upload CSV data", type="csv", key="lsm_upload")
+            uploaded_file = st.file_uploader("Upload CSV with historical prices", type="csv", key="stock_upload")
             if uploaded_file is not None:
                 df = pd.read_csv(uploaded_file)
                 st.dataframe(df.head())
                 
-                x_col = st.selectbox("X Column", df.columns)
-                y_col = st.selectbox("Y Column", df.columns)
+                date_col = st.selectbox("Date Column", df.columns)
+                price_col = st.selectbox("Price Column", df.columns)
                 
-                x = df[x_col].values
-                y = df[y_col].values
+                # Convert dates to numeric values for fitting
+                df['date_numeric'] = pd.to_numeric(pd.to_datetime(df[date_col]))
+                df['date_numeric'] = (df['date_numeric'] - df['date_numeric'].min()) / 86400000000000  # Convert to days
+                
+                x = df['date_numeric'].values
+                y = df[price_col].values
+                
+                # Store dates for display
+                dates = pd.to_datetime(df[date_col])
         else:
-            st.subheader("Sample Data")
-            sample_data = st.text_area("Enter data (format: x,y on each line)", 
-                                        "1,2\n2,3\n3,5\n4,7\n5,11\n6,13\n7,17\n8,19")
+            st.subheader("Sample Stock Data")
+            sample_data = st.text_area("Enter historical stock data (format: YYYY-MM-DD,price on each line)", 
+                                       "2023-01-01,150.25\n2023-02-01,155.50\n2023-03-01,153.75\n2023-04-01,160.00\n"
+                                       "2023-05-01,158.25\n2023-06-01,165.50\n2023-07-01,170.75\n2023-08-01,175.00\n"
+                                       "2023-09-01,172.50\n2023-10-01,180.25\n2023-11-01,185.00\n2023-12-01,190.50")
             
             if sample_data:
                 try:
                     data_lines = sample_data.strip().split("\n")
                     data_points = [line.split(",") for line in data_lines]
-                    x = np.array([float(point[0]) for point in data_points])
-                    y = np.array([float(point[1]) for point in data_points])
+                    dates = pd.to_datetime([point[0] for point in data_points])
+                    prices = np.array([float(point[1]) for point in data_points])
                     
-                    data_df = pd.DataFrame({"x": x, "y": y})
+                    # Convert dates to numeric for fitting
+                    dates_numeric = pd.to_numeric(dates)
+                    dates_numeric = (dates_numeric - dates_numeric.min()) / 86400000000000  # Convert to days
+                    
+                    x = dates_numeric
+                    y = prices
+                    
+                    data_df = pd.DataFrame({"Date": dates, "Price": prices})
                     st.dataframe(data_df)
                 except:
-                    st.error("Invalid data format. Please use 'x,y' on each line.")
+                    st.error("Invalid data format. Please use 'YYYY-MM-DD,price' on each line.")
                     x, y = None, None
         
         if 'x' in locals() and 'y' in locals() and x is not None and y is not None:
-            degree = st.slider("Polynomial Degree", 1, 10, 2)
-            prediction_points = st.number_input("Number of prediction points", 10, 500, 100)
+            degree = st.slider("Polynomial Degree", 1, 5, 2, 
+                               help="Higher degrees can fit data better but may overfit")
+            forecast_periods = st.slider("Forecast periods (months)", 1, 24, 6)
             
-            coeffs = least_squares_approximation(x, y, degree)
-            x_pred, y_pred = predict_values(x, coeffs, prediction_points)
+            coeffs, polynomial, x_full, y_full, forecast_x, forecast_y = stock_price_forecast(x, y, degree, forecast_periods)
             
-            polynomial = np.poly1d(coeffs)
-            formula = f"y = {polynomial}"
-            st.subheader("Polynomial Formula")
-            st.text(formula)
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(x, y, color='blue', label='Original Data')
-            ax.plot(x_pred, y_pred, color='red', label=f'Polynomial (degree {degree})')
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            st.pyplot(fig)
-            
-            st.subheader("Prediction")
-            x_value = st.number_input("Enter X value for prediction", value=float(max(x))+1)
-            predicted_y = polynomial(x_value)
-            st.success(f"Predicted Y for X={x_value}: {predicted_y:.4f}")
-            
-            mse = np.mean((polynomial(x) - y) ** 2)
-            st.info(f"Mean Squared Error: {mse:.6f}")
+            # Convert forecast x values back to dates for display
+            if 'dates' in locals():
+                last_date = dates.iloc[-1]
+                forecast_dates = [last_date + pd.DateOffset(months=i+1) for i in range(forecast_periods)]
+                
+                formula = f"Price = {polynomial}"
+                st.subheader("Forecast Model")
+                st.text(formula)
+                
+                # Create forecast dataframe
+                forecast_df = pd.DataFrame({
+                    "Date": forecast_dates,
+                    "Forecasted Price": forecast_y
+                })
+                
+                st.subheader("Price Forecast")
+                st.dataframe(forecast_df)
+                
+                # Plot the results
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                # Plot historical data
+                ax.scatter(dates, y, color='blue', label='Historical Prices')
+                
+                # Plot forecast
+                ax.scatter(forecast_dates, forecast_y, color='red', label='Forecasted Prices')
+                
+                # Plot trendline
+                all_dates = dates.tolist() + forecast_dates
+                ax.plot(all_dates, y_full, 'g--', label=f'Trend (degree {degree})')
+                
+                ax.set_xlabel("Date")
+                ax.set_ylabel("Price")
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+                # Calculate metrics
+                mse = np.mean((polynomial(x) - y) ** 2)
+                last_price = y[-1]
+                next_price = forecast_y[0]
+                growth_rate = (next_price - last_price) / last_price * 100
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Next Period Price", f"${next_price:.2f}", f"{growth_rate:.2f}%")
+                with col2:
+                    st.metric("Mean Squared Error", f"{mse:.4f}")
     
     with tab3:
-        st.header("Lagrange Polynomial Interpolation")
+        st.header("Portfolio Optimization (Lagrange Multipliers)")
         
-        method = st.radio("Input Method", ["Upload CSV", "Use Sample Data"], key="lagrange_input", horizontal=True)
+        method = st.radio("Input Method", ["Upload CSV", "Use Sample Data"], key="portfolio_input", horizontal=True)
         
         if method == "Upload CSV":
-            uploaded_file = st.file_uploader("Upload CSV data", type="csv", key="lagrange_upload")
+            uploaded_file = st.file_uploader("Upload CSV with asset returns", type="csv", key="portfolio_upload")
             if uploaded_file is not None:
                 df = pd.read_csv(uploaded_file)
+                df = df.set_index(df.columns[0]) if len(df.columns) > 1 else df
                 st.dataframe(df.head())
-                
-                x_col = st.selectbox("X Column", df.columns, key="lagrange_x")
-                y_col = st.selectbox("Y Column", df.columns, key="lagrange_y")
-                
-                x = df[x_col].values
-                y = df[y_col].values
+                returns = df
         else:
-            st.subheader("Sample Data")
-            sample_data = st.text_area("Enter data (format: x,y on each line)", 
-                                        "1,3\n2,6\n4,24\n5,39\n7,81",
-                                        key="lagrange_sample")
+            st.subheader("Sample Portfolio Data")
+            st.write("Monthly returns for 5 assets over 3 years (2020-2022)")
             
-            if sample_data:
-                try:
-                    data_lines = sample_data.strip().split("\n")
-                    data_points = [line.split(",") for line in data_lines]
-                    x = np.array([float(point[0]) for point in data_points])
-                    y = np.array([float(point[1]) for point in data_points])
-                    
-                    data_df = pd.DataFrame({"x": x, "y": y})
-                    st.dataframe(data_df)
-                except:
-                    st.error("Invalid data format. Please use 'x,y' on each line.")
-                    x, y = None, None
+            # Create sample data
+            np.random.seed(42)
+            dates = pd.date_range(start='2020-01-01', end='2022-12-31', freq='M')
+            assets = ['Stock A', 'Stock B', 'Bond A', 'Bond B', 'REIT']
+            
+            # Generate returns with different characteristics
+            returns_data = {
+                'Stock A': np.random.normal(0.01, 0.05, len(dates)),
+                'Stock B': np.random.normal(0.008, 0.04, len(dates)),
+                'Bond A': np.random.normal(0.003, 0.01, len(dates)),
+                'Bond B': np.random.normal(0.004, 0.015, len(dates)),
+                'REIT': np.random.normal(0.006, 0.03, len(dates))
+            }
+            
+            returns = pd.DataFrame(returns_data, index=dates)
+            st.dataframe(returns.head())
         
-        if 'x' in locals() and 'y' in locals() and x is not None and y is not None:
-            missing_x = st.number_input("X value to interpolate", 
-                                       value=float(np.mean([min(x), max(x)])),
-                                       min_value=float(min(x)),
-                                       max_value=float(max(x)))
+        if 'returns' in locals() and returns is not None:
+            risk_free_rate = st.slider("Risk-Free Rate (%)", 0.0, 5.0, 2.0) / 100
             
-            interpolated_value = lagrange_interpolate(x, y, missing_x)
+            # Calculate portfolio statistics
+            min_var_weights, tangency_weights, expected_returns, risks = portfolio_optimization(returns, risk_free_rate)
             
-            x_dense = np.linspace(min(x), max(x), 1000)
-            y_dense = [lagrange_interpolate(x, y, xi) for xi in x_dense]
+            # Display results
+            st.subheader("Portfolio Analysis")
             
+            # Create dataframe with asset statistics
+            asset_stats = pd.DataFrame({
+                'Mean Return': returns.mean(),
+                'Standard Deviation': returns.std(),
+                'Min. Variance Weight': min_var_weights,
+                'Tangency Portfolio Weight': tangency_weights
+            })
+            st.dataframe(asset_stats)
+            
+            # Plot efficient frontier
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(x, y, color='blue', label='Original Data')
-            ax.scatter([missing_x], [interpolated_value], color='red', s=100, label='Interpolated Point')
-            ax.plot(x_dense, y_dense, 'g--', label='Lagrange Polynomial')
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
+            
+            # Plot efficient frontier
+            ax.plot(risks, expected_returns, 'b-', label='Efficient Frontier')
+            
+            # Plot individual assets
+            for i, asset in enumerate(returns.columns):
+                ax.scatter(returns[asset].std(), returns[asset].mean(), 
+                           label=asset, s=100)
+            
+            # Plot minimum variance portfolio
+            min_var_return = np.dot(min_var_weights, returns.mean())
+            min_var_risk = np.sqrt(np.dot(np.dot(min_var_weights, returns.cov()), min_var_weights))
+            ax.scatter(min_var_risk, min_var_return, marker='*', color='g', s=200, label='Min. Variance')
+            
+            # Plot tangency portfolio
+            tangency_return = np.dot(tangency_weights, returns.mean())
+            tangency_risk = np.sqrt(np.dot(np.dot(tangency_weights, returns.cov()), tangency_weights))
+            ax.scatter(tangency_risk, tangency_return, marker='*', color='r', s=200, label='Tangency')
+            
+            # Plot capital market line
+            ax.plot([0, tangency_risk*1.5], [risk_free_rate, risk_free_rate + 1.5*(tangency_return-risk_free_rate)], 
+                    'r--', label='Capital Market Line')
+            
+            ax.set_xlabel("Risk (Standard Deviation)")
+            ax.set_ylabel("Expected Return")
+            ax.set_title("Efficient Frontier and Optimal Portfolios")
             ax.legend()
             ax.grid(True, alpha=0.3)
             st.pyplot(fig)
             
-            st.success(f"Interpolated value at x={missing_x}: {interpolated_value:.4f}")
+            # Portfolio allocation
+            st.subheader("Portfolio Allocation")
             
-            st.subheader("Missing Data Recovery")
-            st.write("Select a point to remove and recover using interpolation:")
-            point_to_remove = st.selectbox("Point to remove", range(len(x)), format_func=lambda i: f"X={x[i]}, Y={y[i]}")
+            portfolio_type = st.radio("Portfolio Type", ["Minimum Variance", "Tangency (Maximum Sharpe)"], horizontal=True)
+            weights = min_var_weights if portfolio_type == "Minimum Variance" else tangency_weights
             
-            if st.button("Recover Missing Point"):
-                x_missing = x[point_to_remove]
-                y_missing = y[point_to_remove]
-                
-                x_reduced = np.delete(x, point_to_remove)
-                y_reduced = np.delete(y, point_to_remove)
-                
-                y_recovered = lagrange_interpolate(x_reduced, y_reduced, x_missing)
-                error = abs(y_recovered - y_missing)
-                relative_error = error / abs(y_missing) * 100 if y_missing != 0 else float('inf')
-                
-                st.write(f"Actual value at X={x_missing}: {y_missing}")
-                st.write(f"Recovered value: {y_recovered:.4f}")
-                st.write(f"Absolute error: {error:.4f}")
-                st.write(f"Relative error: {relative_error:.2f}%")
+            # Display allocation pie chart
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.pie(weights, labels=returns.columns, autopct='%1.1f%%', startangle=90)
+            ax.axis('equal')
+            st.pyplot(fig)
+            
+            # Display metrics
+            portfolio_return = np.dot(weights, returns.mean())
+            portfolio_risk = np.sqrt(np.dot(np.dot(weights, returns.cov()), weights))
+            sharpe_ratio = (portfolio_return - risk_free_rate) / portfolio_risk
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Expected Return", f"{portfolio_return*100:.2f}%")
+            with col2:
+                st.metric("Risk (Std Dev)", f"{portfolio_risk*100:.2f}%")
+            with col3:
+                st.metric("Sharpe Ratio", f"{sharpe_ratio:.3f}")
     
     with tab4:
-        st.header("Cubic Spline Smoothing")
+        st.header("Yield Curve Analysis (Cubic Spline)")
         
-        method = st.radio("Input Method", ["Upload CSV", "Use Sample Data"], key="spline_input", horizontal=True)
+        method = st.radio("Input Method", ["Upload CSV", "Use Sample Data"], key="yield_input", horizontal=True)
         
         if method == "Upload CSV":
-            uploaded_file = st.file_uploader("Upload CSV data", type="csv", key="spline_upload")
+            uploaded_file = st.file_uploader("Upload CSV with yield curve data", type="csv", key="yield_upload")
             if uploaded_file is not None:
                 df = pd.read_csv(uploaded_file)
                 st.dataframe(df.head())
                 
-                x_col = st.selectbox("X Column", df.columns, key="spline_x")
-                y_col = st.selectbox("Y Column", df.columns, key="spline_y")
+                maturity_col = st.selectbox("Maturity Column (years)", df.columns, key="yield_maturity")
+                yield_col = st.selectbox("Yield Column (%)", df.columns, key="yield_rate")
                 
-                x = df[x_col].values
-                y = df[y_col].values
+                maturities = df[maturity_col].values
+                yields = df[yield_col].values
         else:
-            st.subheader("Sample Data")
-            sample_data = st.text_area("Enter data (format: x,y on each line)", 
-                                       "1,2.1\n1.5,3.5\n2,4.0\n2.5,3.8\n3,5.2\n3.5,6.1\n4,5.8\n4.5,7.2\n5,8.0\n5.5,7.9\n6,9.1",
-                                       key="spline_sample")
+            st.subheader("Sample Yield Curve Data")
+            st.write("US Treasury yields by maturity (sample data)")
+            
+            sample_data = st.text_area("Enter data (format: maturity_years,yield_percent on each line)", 
+                                     "0.25,3.95\n0.5,3.91\n1,3.85\n2,3.43\n3,3.25\n5,3.18\n7,3.20\n10,3.35\n20,3.70\n30,3.81",
+                                     key="yield_sample")
             
             if sample_data:
                 try:
                     data_lines = sample_data.strip().split("\n")
                     data_points = [line.split(",") for line in data_lines]
-                    x = np.array([float(point[0]) for point in data_points])
-                    y = np.array([float(point[1]) for point in data_points])
+                    maturities = np.array([float(point[0]) for point in data_points])
+                    yields = np.array([float(point[1]) for point in data_points])
                     
-                    data_df = pd.DataFrame({"x": x, "y": y})
+                    data_df = pd.DataFrame({"Maturity (Years)": maturities, "Yield (%)": yields})
                     st.dataframe(data_df)
                 except:
-                    st.error("Invalid data format. Please use 'x,y' on each line.")
-                    x, y = None, None
+                    st.error("Invalid data format. Please use 'maturity_years,yield_percent' on each line.")
+                    maturities, yields = None, None
         
-        if 'x' in locals() and 'y' in locals() and x is not None and y is not None:
-            points = st.slider("Number of interpolation points", 100, 1000, 500)
+        if 'maturities' in locals() and 'yields' in locals() and maturities is not None and yields is not None:
+            # Generate dense set of maturities for interpolation
+            interp_points = st.slider("Number of interpolation points", 50, 500, 200)
             
-            x_new, y_new = apply_cubic_spline(x, y, points)
+            # Create interpolation
+            dense_maturities = np.linspace(min(maturities), max(maturities), interp_points)
+            dense_maturities, dense_yields, tck = yield_curve_interpolation(maturities, yields, dense_maturities)
             
+            # Plot the yield curve
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(x, y, color='blue', label='Original Data')
-            ax.plot(x_new, y_new, color='red', label='Cubic Spline')
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
+            ax.scatter(maturities, yields, color='blue', s=100, label='Observed Yields')
+            ax.plot(dense_maturities, dense_yields, 'r-', label='Interpolated Yield Curve')
+            ax.set_xlabel("Maturity (Years)")
+            ax.set_ylabel("Yield (%)")
+            ax.set_title("Yield Curve")
             ax.legend()
             ax.grid(True, alpha=0.3)
             st.pyplot(fig)
             
-            st.subheader("Interpolation")
-            interp_x = st.number_input("Enter X value for interpolation", 
-                                      value=float(np.mean([min(x), max(x)])),
-                                      min_value=float(min(x)),
-                                      max_value=float(max(x)))
+            # Calculate yield curve metrics
+            st.subheader("Yield Curve Analysis")
             
-            tck = interpolate.splrep(x, y, s=0)
-            interp_y = float(interpolate.splev(interp_x, tck, der=0))
+            # Calculate slope (10y - 3m)
+            short_idx = np.abs(maturities - 0.25).argmin()
+            long_idx = np.abs(maturities - 10).argmin()
+            slope = yields[long_idx] - yields[short_idx]
             
-            st.success(f"Interpolated value at x={interp_x}: {interp_y:.4f}")
+            # Calculate curvature (2*(2y) - (10y + 3m))
+            mid_idx = np.abs(maturities - 2).argmin()
+            curvature = 2 * yields[mid_idx] - (yields[long_idx] + yields[short_idx])
+            
+            # Display metrics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Yield Curve Slope", f"{slope:.2f}%", 
+                         "Normal" if slope > 0 else "Inverted (Recession Signal)")
+            with col2:
+                st.metric("Yield Curve Curvature", f"{curvature:.2f}%")
+            
+            # Calculate forward rates
+            st.subheader("Forward Rate Analysis")
+            
+            # Spot rates to forward rates
+            forward_rates = []
+            forward_maturities = []
+            
+            for i in range(len(dense_maturities)-1):
+                t1 = dense_maturities[i]
+                t2 = dense_maturities[i+1]
+                r1 = dense_yields[i]
+                r2 = dense_yields[i+1]
+                
+                # Calculate forward rate
+                forward_rate = ((1 + r2/100) ** t2) / ((1 + r1/100) ** t1) - 1
+                forward_rate = forward_rate * 100
+                
+                forward_rates.append(forward_rate)
+                forward_maturities.append(t1)
+            
+            # Plot forward rates
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(forward_maturities, forward_rates, 'g-', label='Implied Forward Rates')
+            ax.plot(dense_maturities, dense_yields, 'r--', label='Spot Yield Curve')
+            ax.set_xlabel("Maturity (Years)")
+            ax.set_ylabel("Rate (%)")
+            ax.set_title("Spot Yield Curve vs. Forward Rates")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+            
+            # Custom yield calculation
+            st.subheader("Custom Maturity Interpolation")
+            col1, col2 = st.columns(2)
+            with col1:
+                custom_maturity = st.number_input("Enter maturity (years)", 
+                                                 value=1.5,
+                                                 min_value=float(min(maturities)),
+                                                 max_value=float(max(maturities)))
+            
+            interpolated_yield = float(interpolate.splev(custom_maturity, tck, der=0))
+            
+            with col2:
+                st.metric(f"Interpolated yield at {custom_maturity} years", f"{interpolated_yield:.4f}%")
 
     st.sidebar.title("Financial Analysis Suite")
     st.sidebar.write("This application demonstrates numerical methods in financial analysis:")
     st.sidebar.write("1. Newton's Method for loan calculations")
-    st.sidebar.write("2. Least Squares Method for trend prediction")
-    st.sidebar.write("3. Lagrange Interpolation for data recovery")
-    st.sidebar.write("4. Cubic Splines for data smoothing")
+    st.sidebar.write("2. Least Squares Method for stock price forecasting")
+    st.sidebar.write("3. Lagrange Multipliers for portfolio optimization")
+    st.sidebar.write("4. Cubic Splines for yield curve analysis")
 
 if __name__ == "__main__":
     main()
