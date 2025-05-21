@@ -408,12 +408,12 @@ def render_bond_valuation():
             
             st.subheader("Yield Curve Analysis")
             
-            short_idx = np.abs(maturities - 2).argmin()
-            long_idx = np.abs(maturities - 10).argmin()
-            slope = yields[long_idx] - yields[short_idx]
-            
-            mid_idx = np.abs(maturities - 5).argmin()
-            curvature = yields[short_idx] + yields[long_idx] - 2 * yields[mid_idx]
+            short_yield = interpolate.splev(2, tck, der=0)
+            long_yield = interpolate.splev(10, tck, der=0)
+            mid_yield = interpolate.splev(5, tck, der=0)
+
+            slope = long_yield - short_yield
+            curvature = short_yield + long_yield - 2 * mid_yield
             
             col1, col2 = st.columns(2)
             with col1:
